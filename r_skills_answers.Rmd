@@ -1,0 +1,234 @@
+---
+title: "R Skills Test"
+author: "Jared Johnson"
+date: "1/10/2023"
+output: html_document
+---
+
+# Libraries
+```{r load_libs, message=F}
+library(tidyverse)
+library(lubridate)
+library(knitr)
+library(kableExtra)
+library(stringdist)
+```
+
+# Task 1 - load lineage data
+```{r task_1}
+# load lineage data
+lineages_df <- read.csv("lineages/lineages.csv")
+```
+
+# Task 2 - bind and remove empty rows
+```{r task_2}
+# read all csv files in submission directory
+gen_lab_sub <- read.csv("submissions/genseq_laboratory_submission.csv", na.strings=c("","NA"))
+nw_seq_labs <- read.csv("submissions/nw__seq_labs_submission.csv", na.strings=c("","NA"))
+
+# check that the columns are the same for both files
+if(!(FALSE %in% (colnames(gen_lab_sub) == colnames(nw_seq_labs)))){
+  # if true, combine into single dataframe
+  submissions_df <- rbind(gen_lab_sub,nw_seq_labs)
+}
+
+# remove empty rows
+submissions_df_0 <- submissions_df[rowSums(is.na(submissions_df)) != ncol(submissions_df),]
+# check if any rows were removed
+if(nrow(submissions_df) == nrow(submissions_df_0)){
+  cat("No rows were removed")
+}else("Rows were removed")
+```
+
+# Task 3 - transform date to mm/dd/yyyy
+```{r task_3, warning=F}
+submissions_df_1 <- submissions_df %>% 
+  mutate(SPECIMEN_COLLECTION_DATE = case_when(
+    nchar(SPECIMEN_COLLECTION_DATE) == 5 ~ format(as.Date(as.numeric(SPECIMEN_COLLECTION_DATE), origin = "1899-12-30"), "%m/%d/%Y"),
+    !is.na(mdy(SPECIMEN_COLLECTION_DATE)) ~ format(mdy(SPECIMEN_COLLECTION_DATE), "%m/%d/%Y"),
+    !is.na(ymd(SPECIMEN_COLLECTION_DATE)) ~ format(ymd(SPECIMEN_COLLECTION_DATE), "%m/%d/%Y")
+    ),
+    DOB = case_when(
+      nchar(DOB) == 5 ~ format(as.Date(as.numeric(DOB), origin = "1899-12-30"), "%m/%d/%Y"),
+      !is.na(mdy(DOB)) ~ format(mdy(DOB), "%m/%d/%Y"),
+      !is.na(ymd(DOB)) ~ format(ymd(DOB), "%m/%d/%Y")
+      )
+    )
+```
+
+# Task 4 - clean and transform name values
+```{r task_4}
+# function for converting to uppercase, removing whitespace and special characters
+format_names <- function(names){
+  result <- names %>% 
+    toupper() %>% 
+    gsub(pattern = "[[:space:]]", replacement = "") %>% 
+    gsub(pattern = "[[:punct:]]", replacement = "")
+  
+  return(result)
+}
+# run the above function on the first, middle, and last name and save the result as a new dataframe
+submissions_df_2 <- submissions_df %>% 
+  mutate(FIRST_NAME = format_names(FIRST_NAME), MIDDLE_NAME = format_names(MIDDLE_NAME), LAST_NAME = format_names(LAST_NAME))
+```
+
+# Task 5 - merge submission data with metadata
+```{r task_5}
+# load metadata
+metadata_df <- read.csv("metadata/patient_metadata.csv")
+# merge data
+merged_df <- left_join(submissions_df, metadata_df, keep = F, "LAB_ACCESSION_ID")
+# check that all samples from metadata_df were retained
+if(sum(submissions_df$LAB_ACCESSION_ID %in% merged_df$LAB_ACCESSION_ID) == nrow(submissions_df)){
+  cat("All samples from submissions_df are present in merged_df!", sep = "\n")
+}else(cat("Error: Some samples are missing from merged_df"))
+```
+
+# Task 6 - check if select columns are valid
+```{r task_6}
+# define valid conditions for each column
+valid_seq_reason <- c("SENTINEL SURVEILLANCE", "OUTBREAK", "CLINICAL")
+valid_seq_status <- c("COMPLETE", "FAILED")
+valid_lineage <- lineages_df[!is.na(lineages_df$lineage_extracted),]$lineage_extracted
+
+# apply conditions to the merged dataframe
+merged_df <- merged_df %>% 
+  mutate(seq_reason_valid = case_when(SEQUENCE_REASON %in% valid_seq_reason ~ TRUE,
+                                      !(SEQUENCE_REASON %in% valid_seq_reason) ~ FALSE),
+         seq_status_valid = case_when(SEQUENCE_STATUS %in% valid_seq_status ~ TRUE,
+                                      !(SEQUENCE_STATUS %in% valid_seq_status) ~ FALSE),
+         lineage_valid = case_when(PANGO_LINEAGE %in% valid_lineage ~ TRUE,
+                                   !(PANGO_LINEAGE %in% valid_lineage) ~ FALSE)
+         )
+```
+
+# Task 7 - subset flagged samples and save as csv file
+```{r task_7}
+merged_df.flagged <- merged_df[merged_df$seq_reason_valid == FALSE | merged_df$seq_status_valid== FALSE | merged_df$lineage_valid == FALSE,]
+write.csv(x = merged_df.flagged, file = "outputs/flag.csv", row.names = F)
+```
+
+# Task 8 - save final dataset (i.e., non-flagged samples) as csv file
+```{r task_8}
+merged_df.final <- merged_df[!(merged_df$LAB_ACCESSION_ID %in% merged_df.flagged),]
+write.csv(x = merged_df.final, file = "outputs/final.csv", row.names = F)
+```
+
+# Task 9 - summarize/plot data
+```{r task_9.1, echo=F}
+# create dataframe containing only samples with all relevant information
+df.summary <- merged_df.final[,c("SPECIMEN_COLLECTION_DATE","SUBMITTING_LAB","SEQUENCE_REASON","DOB.y","PANGO_LINEAGE")] %>% 
+  drop_na()
+```
+### SAMPLE INFORMATION
+```{r task_9.2, echo=FALSE}
+# sample information
+df.summary %>% 
+  mutate(SPECIMEN_COLLECTION_DATE = mdy(SPECIMEN_COLLECTION_DATE)) %>% 
+  summarise(
+    "x"= c(paste0("**Collection Range: **",format(min(SPECIMEN_COLLECTION_DATE, na.rm = T), "%b %d, %Y")," to ", format(max(SPECIMEN_COLLECTION_DATE, na.rm = T), "%b %d, %Y")), 
+           paste0("**Collection Sources: **", paste0(unique(SUBMITTING_LAB), collapse = ", ")),
+           paste0("**Collection Reasons: **", paste0(unique(SEQUENCE_REASON), collapse = ", "))
+           )
+    ) %>%
+  kable(col.names = "") %>%
+  kable_styling()
+```
+### DEMOGRAPHICS
+```{r task_9.3, echo=F}
+# demographics
+df.summary %>% 
+  mutate(DOB.y = mdy(DOB.y)) %>% 
+  summarise(
+    "x"= paste0("**Age Range: **",round((max(DOB.y, na.rm = T) %--% Sys.Date())/years(1))," to ", round((min(DOB.y, na.rm = T) %--% Sys.Date())/years(1)), " years old")
+    ) %>%
+  kable(col.names = "") %>%
+  kable_styling()
+```
+### OBSERVED SARS-COV2 LINEAGES
+```{r task_9.4, echo=F}
+# figure 1 - relative abundance of observed lineages
+df.summary %>% 
+  group_by(PANGO_LINEAGE) %>% 
+  count() %>% 
+  ungroup() %>% 
+  mutate(prop = n / sum(n)) %>% 
+  mutate(ymax = cumsum(prop)) %>%
+  mutate(ymin = c(0, head(ymax, n=-1))) %>%
+  mutate(labelPosition = (ymax+ymin)/2, 
+         label = paste0(PANGO_LINEAGE,"\n(",round(100*prop),"%, "," n=",n,")")) %>%
+  ggplot(aes(ymax=ymax, ymin=ymin, xmax=4, xmin=3, fill=PANGO_LINEAGE))+
+  geom_rect(color="white")+
+  geom_text(x=3.5, aes(y=labelPosition, label=label), fontface="bold", size=3)+
+  coord_polar(theta = "y")+
+  xlim(c(2,4))+
+  theme_void()+
+  labs(fill="Lineage")+
+  scale_fill_manual(values = c("#264653","#2a9d8f","#e9c46a","#f4a261"))
+
+# print footnote
+cat("This report was made using samples that contained values in the COLLECTION_DATE, SUBMITTING_LAB, SEQUENCING_REASON, DOB, and PANGO_LINEAGE columns.", sep = "\n")
+```
+
+# Bonus Tasks
+## Bonus Task 1 - knit rmarkdown to html
+see './r_skills_answers.html'
+
+## Bonus Task 2 - demonstrate use of fuzzy matching
+```{r bonus_task_2, warning=F}
+## create new datasets for this example with correctly formatted id, names, and dates
+submissions_df.fuzzy <- submissions_df %>% mutate(LAB_ACCESSION_ID = format_names(LAB_ACCESSION_ID),
+                                                  FIRST_NAME = format_names(FIRST_NAME),
+                                                  LAST_NAME = format_names(LAST_NAME),
+                                                  DOB = case_when(
+                                                    nchar(DOB) == 5 ~ format(as.Date(as.numeric(DOB), origin = "1899-12-30"), "%m/%d/%Y"),
+                                                    !is.na(mdy(DOB)) ~ format(mdy(DOB), "%m/%d/%Y"),
+                                                    !is.na(ymd(DOB)) ~ format(ymd(DOB), "%m/%d/%Y")
+                                                    )
+                                                  )
+metadata_df.fuzzy <- metadata_df %>% mutate(LAB_ACCESSION_ID = format_names(LAB_ACCESSION_ID),
+                                            FIRST_NAME = format_names(FIRST_NAME),
+                                            LAST_NAME = format_names(LAST_NAME),
+                                            DOB = case_when(
+                                                    nchar(DOB) == 5 ~ format(as.Date(as.numeric(DOB), origin = "1899-12-30"), "%m/%d/%Y"),
+                                                    !is.na(mdy(DOB)) ~ format(mdy(DOB), "%m/%d/%Y"),
+                                                    !is.na(ymd(DOB)) ~ format(ymd(DOB), "%m/%d/%Y")
+                                                    )
+                                            )
+# function that detects unmerged samples and attempts to fuzzy merge based on lab accession id followed by confirmation using name and DOB.
+fuzzy_merge <- function(df1,df2){
+  # merge samples present in both datasets based on lab accession id
+  merged.df <- merge(df1, df2,  all=F, by= "LAB_ACCESSION_ID")
+  # identify any missing from df1
+  not_merged_df <- df1[!(df1$LAB_ACCESSION_ID %in% merged.df$LAB_ACCESSION_ID),]
+  # function for performing the fuzzy distance comparison and merging decision
+  fuzzy_id <- function(id){
+    # calculate pairwise string distances for sample that was not merged to identify closest match
+    min_string_dist <- df2 %>% 
+      mutate(str_dist = stringdist(not_merged_df$LAB_ACCESSION_ID, LAB_ACCESSION_ID, method = "jw")) %>% 
+      subset(min(str_dist) == str_dist)
+    # print top hit for given id
+    cat(paste0(id," most closely matches ",min_string_dist$LAB_ACCESSION_ID), sep = "\n")
+    # compare name and DOB of closest df2 match to the DOB and name of the missing sample from df1 and merge if they match
+    if((not_merged_df$FIRST_NAME == min_string_dist$FIRST_NAME & not_merged_df$LAST_NAME == min_string_dist$LAST_NAME &
+        not_merged_df$DOB == min_string_dist$DOB) == TRUE){
+      ## change metadata lab accession id to match the id in the submission dataset
+      min_string_dist$LAB_ACCESSION_ID <- not_merged_df$LAB_ACCESSION_ID
+      ## merge the data and return
+      fuzzy_merged <- left_join(not_merged_df, min_string_dist)
+      return(fuzzy_merged)
+    }else(cat(paste0(id," was not merged with ",min_string_dist$LAB_ACCESSION_ID," because one or more of the date or name columns did not match", sep = "\n")))
+  }
+  
+  # loop over missing samples and bind all that merged
+  tmp <- lapply(not_merged_df$LAB_ACCESSION_ID, FUN=fuzzy_id)
+  all.fuzzy_merge <- do.call(rbind, tmp)
+  # bind fuzzy merge samples to normal merge samples and return result
+  result <- rbind(merged.df, all.fuzzy_merge)
+  return(result)
+}
+
+# run function to merge any ambiguous samples
+merged_df.fuzzy <- fuzzy_merge(submissions_df.fuzzy, metadata_df.fuzzy)
+```
+
